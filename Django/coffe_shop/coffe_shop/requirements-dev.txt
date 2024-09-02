@@ -1,0 +1,2 @@
+ipython===8.25.0
+black
