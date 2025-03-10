@@ -1,0 +1,14 @@
+from python:3.11.9
+
+workdir /app
+copy requirements.txt /app/requirements.txt
+
+run pip install --no-cache-dir --upgrade -r /app/requirements.txt
+
+copy . /app
+
+ENV PATH="/root/.local/bin:${PATH}"
+
+run apt-get update && apt-get install -y nano
+
+cmd ["python", "manage.py", "runserver", "0.0.0.0:8000"]
