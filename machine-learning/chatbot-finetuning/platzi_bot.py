@@ -6,7 +6,7 @@ import time
 
 load_dotenv()
 
-openai = os.getenv("OPENAI_API_KEY")
+openai = OpenAI( api_key=os.getenv("OPENAI_API_KEY"))
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 # openai = OpenAI(api_key='INSERTA TU API KEY')
 # TOKEN = "INSERTA TU TOKEN DE BOTHFATHER"
@@ -32,7 +32,7 @@ def get_openai_response(prompt):
         inglés y liderazgo llamada Platzi
         '''     
     response = openai.chat.completions.create(
-		model='INGRESA EL NOMBRE DE TU MODELO CON FINE-TUNING',
+		model=os.getenv("OPENAI_MODEL"),
 		messages=[
             {"role": "system", "content" :f'{system}'},
             {"role": "user", "content" : f'{prompt}'}],
@@ -57,9 +57,6 @@ def main():
                 send_messages(chat_id, GPT)
         else:
             time.sleep(1)
-
-
-
 
 if __name__ == '__main__':
     main()
