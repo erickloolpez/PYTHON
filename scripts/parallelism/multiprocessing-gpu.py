@@ -76,7 +76,7 @@ def procesar_lote_gpu(lineas_lote, numeros_linea, ctx, queue, max_len):
     
     return resultados_lote
 
-def procesar_archivo_por_lotes_gpu(ruta_archivo, batch_size=50000):
+def procesar_archivo_por_lotes_gpu(ruta_archivo, batch_size=10000):
     """Procesa el archivo por lotes usando GPU"""
     ctx = cl.create_some_context()
     queue = cl.CommandQueue(ctx)
