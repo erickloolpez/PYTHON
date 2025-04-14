@@ -1,0 +1,6 @@
+train: "label-studio/train/images"
+val: "label-studio/val/images"
+test: "label-studio/test/images"
+
+nc: 2
+names: ["cascos", "chalecos"]
