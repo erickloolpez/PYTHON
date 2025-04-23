@@ -1,227 +1,172 @@
-from multiprocessing import Process, Queue, cpu_count, Manager
-import time
+from multiprocessing import Process, Queue, cpu_count
+from itertools import islice
 from tqdm import tqdm
 import json
+import os
+import time
+import psutil
 
-def leer_lineas_validas(ruta_archivo):
-    """Lee solo líneas válidas (no vacías y no encabezados) de un archivo"""
-    lineas = []
-    try:
-        with open(ruta_archivo, 'r') as f:
-            for linea in f:
-                linea = linea.strip()
-                if linea and not linea.startswith('>'):
-                    lineas.append(linea)
-        return lineas
-    except Exception as e:
-        print(f"Error leyendo {ruta_archivo}: {str(e)}")
-        return None
+MAX_MEMORY_USAGE = 0.8
+BUFFER_SIZE = 50
 
-def comparar_lote_lineas(lote1, lote2, inicio_linea, resultado_queue):
-    """Compara un lote de líneas entre los dos archivos"""
-    resultados_lote = []
+def get_available_memory():
+    return psutil.virtual_memory().available
+
+def leer_bloque_validas(f, n):
+    """Lee n líneas válidas desde un archivo"""
+    bloque = []
+    while len(bloque) < n:
+        try:
+            linea = next(f).strip()
+            if linea and not linea.startswith('>'):
+                bloque.append(linea)
+        except StopIteration:
+            break
+    return bloque
+
+def comparar_lineas(linea1, linea2, num_linea):
+    if linea1 == linea2:
+        return {'linea': num_linea, 'resultado': 'identical'}
     
-    for i in range(min(len(lote1), len(lote2))):
-        linea1 = lote1[i]
-        linea2 = lote2[i]
-        linea_num = inicio_linea + i + 1
-        
-        if linea1 == linea2:
-            resultados_lote.append({
-                'linea': linea_num,
-                'resultado': 'identical'
+    diferencias = []
+    len_min = min(len(linea1), len(linea2))
+    
+    for pos in range(len_min):
+        if linea1[pos] != linea2[pos]:
+            diferencias.append({
+                'posicion': pos+1,
+                'cadena1': linea1[pos],
+                'cadena2': linea2[pos]
             })
-            continue
-            
-        diferencias = []
-        len_min = min(len(linea1), len(linea2))
-        
-        for pos in range(len_min):
-            if linea1[pos] != linea2[pos]:
-                diferencias.append({
-                    'posicion': pos+1,
-                    'cadena1': linea1[pos],
-                    'cadena2': linea2[pos]
-                })
-        
-        if len(linea1) != len(linea2):
-            if len(linea1) > len(linea2):
-                for pos in range(len(linea2), len(linea1)):
-                    diferencias.append({
-                        'posicion': pos+1,
-                        'cadena1': linea1[pos],
-                        'cadena2': None
-                    })
-            else:
-                for pos in range(len(linea1), len(linea2)):
-                    diferencias.append({
-                        'posicion': pos+1,
-                        'cadena1': None,
-                        'cadena2': linea2[pos]
-                    })
-        
-        resultados_lote.append({
-            'linea': linea_num,
-            'diferencias': diferencias
-        })
     
-    resultado_queue.put(resultados_lote)
+    if len(linea1) != len(linea2):
+        extra = range(len_min, max(len(linea1), len(linea2)))
+        for pos in extra:
+            diferencias.append({
+                'posicion': pos+1,
+                'cadena1': linea1[pos] if pos < len(linea1) else None,
+                'cadena2': linea2[pos] if pos < len(linea2) else None
+            })
+    
+    return {'linea': num_linea, 'diferencias': diferencias}
 
-def procesar_archivos_paralelo(ruta_archivo1, ruta_archivo2, num_procesos, tamano_lote=1000):
-    """Procesa los archivos en paralelo por lotes"""
-    lineas1 = leer_lineas_validas(ruta_archivo1)
-    lineas2 = leer_lineas_validas(ruta_archivo2)
-    
-    if lineas1 is None or lineas2 is None:
-        return [], 0, 0
-    
-    total_lineas = max(len(lineas1), len(lineas2))
-    print(f"Total de líneas a comparar: {total_lineas}")
-    
-    try:
-        json_file = open("diferencias_lineas.json", "w")
-        txt_file = open("diferencias_lineas.txt", "w")
-        txt_file.write("Comparación línea por línea entre archivos:\n")
-        txt_file.write(f"Archivo 1: {ruta_archivo1}\n")
-        txt_file.write(f"Archivo 2: {ruta_archivo2}\n\n")
-    except Exception as e:
-        print(f"Error creando archivos de salida: {str(e)}")
-        return [], 0, 0
-    
-    manager = Manager()
-    resultado_queue = manager.Queue()
-    procesos = []
-    tiempo_inicio = time.perf_counter()
-    total_coincidencias = 0
+def worker(bloque1, bloque2, start_idx, result_queue):
+    resultados = []
+    for i, (l1, l2) in enumerate(zip(bloque1, bloque2)):
+        res = comparar_lineas(l1, l2, start_idx + i + 1)
+        resultados.append(res)
+    result_queue.put(resultados)
+
+def escribir_resultados(resultados, json_file, txt_file):
+    for res in resultados:
+        json.dump(res, json_file)
+        json_file.write('\n')
+        if res.get('resultado') == 'identical':
+            txt_file.write(f"Línea {res['linea']}: [CADENA IDÉNTICA]\n")
+        else:
+            txt_file.write(f"Línea {res['linea']}:\n")
+            for dif in res.get('diferencias', []):
+                txt_file.write(f"  Pos {dif['posicion']}: Arch1[{dif['cadena1']}] vs Arch2[{dif['cadena2']}]\n")
+
+def procesar_archivos(ruta1, ruta2):
     muestra_resultados = []
-    
-    try:
-        with tqdm(total=total_lineas, desc="Procesando líneas") as pbar:
-            lote_actual1 = []
-            lote_actual2 = []
-            linea_actual = 0
-            
-            while linea_actual < total_lineas:
-                if linea_actual < len(lineas1):
-                    lote_actual1.append(lineas1[linea_actual])
-                if linea_actual < len(lineas2):
-                    lote_actual2.append(lineas2[linea_actual])
-                
-                linea_actual += 1
-                pbar.update(1)
-                
-                if len(lote_actual1) + len(lote_actual2) >= tamano_lote or linea_actual == total_lineas:
-                    if lote_actual1 or lote_actual2:
-                        while len(procesos) >= num_procesos:
-                            for i, p in enumerate(procesos):
-                                if not p.is_alive():
-                                    procesos.pop(i)
-                                    while not resultado_queue.empty():
-                                        resultados = resultado_queue.get()
-                                        total_coincidencias += len(resultados)
-                                        for res in resultados:
-                                            json.dump(res, json_file)
-                                            json_file.write('\n')
-                                            
-                                            if 'resultado' in res and res['resultado'] == 'identical':
-                                                txt_file.write(f"Línea {res['linea']} -> La cadena es idéntica\n")
-                                            else:
-                                                txt_file.write(f"Línea {res['linea']} -> Diferencias:\n")
-                                                for dif in res.get('diferencias', []):
-                                                    txt_file.write(f"  Pos {dif['posicion']}: ")
-                                                    txt_file.write(f"Arch1[{dif['cadena1']}] vs Arch2[{dif['cadena2']}]\n")
-                                        if len(muestra_resultados) < 20:
-                                            muestra_resultados.extend(resultados[:20-len(muestra_resultados)])
-                                    break
-                            else:
-                                time.sleep(0.1)
-                        
-                        inicio_global = linea_actual - len(lote_actual1) - len(lote_actual2)
-                        p = Process(target=comparar_lote_lineas,
-                                  args=(lote_actual1, lote_actual2, inicio_global, resultado_queue))
-                        p.start()
-                        procesos.append(p)
-                        lote_actual1 = []
-                        lote_actual2 = []
-        
-        for p in procesos:
-            p.join()
-            while not resultado_queue.empty():
-                resultados = resultado_queue.get()
-                total_coincidencias += len(resultados)
-                for res in resultados:
-                    json.dump(res, json_file)
-                    json_file.write('\n')
-                    
-                    if 'resultado' in res and res['resultado'] == 'identical':
-                        txt_file.write(f"Línea {res['linea']} -> La cadena es idéntica\n")
-                    else:
-                        txt_file.write(f"Línea {res['linea']} -> Diferencias:\n")
-                        for dif in res.get('diferencias', []):
-                            txt_file.write(f"  Pos {dif['posicion']}: ")
-                            txt_file.write(f"Arch1[{dif['cadena1']}] vs Arch2[{dif['cadena2']}]\n")
-                if len(muestra_resultados) < 20:
-                    muestra_resultados.extend(resultados[:20-len(muestra_resultados)])
-        
-        # Manejar líneas sobrantes
-        if len(lineas1) > len(lineas2):
-            for i in range(len(lineas2), len(lineas1)):
-                txt_file.write(f"Línea {i+1} -> Solo existe en el primer archivo: {lineas1[i][:50]}...\n")
-                json.dump({
-                    'linea': i+1,
-                    'resultado': 'solo_en_archivo1',
-                    'contenido': lineas1[i]
-                }, json_file)
-                json_file.write('\n')
-        elif len(lineas2) > len(lineas1):
-            for i in range(len(lineas1), len(lineas2)):
-                txt_file.write(f"Línea {i+1} -> Solo existe en el segundo archivo: {lineas2[i][:50]}...\n")
-                json.dump({
-                    'linea': i+1,
-                    'resultado': 'solo_en_archivo2',
-                    'contenido': lineas2[i]
-                }, json_file)
-                json_file.write('\n')
-        
-        tiempo_total = time.perf_counter() - tiempo_inicio
-        
-    except Exception as e:
-        print(f"Error durante el procesamiento: {str(e)}")
-        tiempo_total = time.perf_counter() - tiempo_inicio
-        return muestra_resultados, total_coincidencias, tiempo_total
-    
-    finally:
-        json_file.close()
-        txt_file.close()
-    
-    return muestra_resultados, total_coincidencias, tiempo_total
+    total_diferencias = 0
+    buffer_resultados = []
+
+    available_mem = get_available_memory()
+    mem_por_linea = 1000  # estimación conservadora
+    max_lineas_en_mem = int((available_mem * MAX_MEMORY_USAGE) / mem_por_linea)
+    block_size = max(min(max_lineas_en_mem // cpu_count(), 10000), 1)
+
+    tiempo_inicio = time.time()
+
+    with open(ruta1, 'r') as f1, open(ruta2, 'r') as f2, \
+         open("diferencias.json", "w") as json_file, \
+         open("diferencias.txt", "w") as txt_file:
+
+        txt_file.write("Comparación línea por línea:\n")
+        txt_file.write(f"Archivo 1: {ruta1}\n")
+        txt_file.write(f"Archivo 2: {ruta2}\n\n")
+
+        linea_global = 0
+        with tqdm(desc="Procesando") as pbar:
+            while True:
+                bloque1 = leer_bloque_validas(f1, block_size)
+                bloque2 = leer_bloque_validas(f2, block_size)
+                tamano_bloque = max(len(bloque1), len(bloque2))
+
+                if not bloque1 and not bloque2:
+                    break
+
+                # Rellenar el bloque más corto con cadenas vacías para igualar longitud
+                while len(bloque1) < tamano_bloque:
+                    bloque1.append('')
+                while len(bloque2) < tamano_bloque:
+                    bloque2.append('')
+
+                num_workers = min(cpu_count(), tamano_bloque)
+                lines_per_worker = tamano_bloque // num_workers
+                processes = []
+                result_queue = Queue()
+
+                for i in range(num_workers):
+                    inicio = i * lines_per_worker
+                    fin = (i + 1) * lines_per_worker if i < num_workers - 1 else tamano_bloque
+                    p = Process(
+                        target=worker,
+                        args=(bloque1[inicio:fin], bloque2[inicio:fin], linea_global + inicio, result_queue)
+                    )
+                    p.start()
+                    processes.append(p)
+
+                for _ in processes:
+                    resultados = result_queue.get()
+                    buffer_resultados.extend(resultados)
+
+                    if len(buffer_resultados) >= BUFFER_SIZE:
+                        escribir_resultados(buffer_resultados, json_file, txt_file)
+                        total_diferencias += len(buffer_resultados)
+                        if len(muestra_resultados) < 20:
+                            muestra_resultados.extend(
+                                [r for r in buffer_resultados if 'diferencias' in r][:20 - len(muestra_resultados)]
+                            )
+                        buffer_resultados = []
+
+                for p in processes:
+                    p.join()
+
+                linea_global += tamano_bloque
+                pbar.update(tamano_bloque)
+
+        # Escribir el buffer restante
+        if buffer_resultados:
+            escribir_resultados(buffer_resultados, json_file, txt_file)
+            total_diferencias += len(buffer_resultados)
+
+    tiempo_total = time.time() - tiempo_inicio
+    return muestra_resultados, total_diferencias, tiempo_total
 
 def main():
-    ruta_archivo1 = "chain-one-test.fna"
-    ruta_archivo2 = "chain-two-test.fna"
-    num_procesos = min(cpu_count(), 8)
-    tamano_lote = 1000
-    
-    print(f"Iniciando comparación línea por línea entre:")
-    print(f"Archivo 1: {ruta_archivo1}")
-    print(f"Archivo 2: {ruta_archivo2}")
-    
-    muestra, total, tiempo = procesar_archivos_paralelo(
-        ruta_archivo1, ruta_archivo2, num_procesos, tamano_lote)
-    
-    print(f"\nProcesamiento completado en {tiempo:.2f} segundos")
-    print(f"Total de líneas comparadas: {total}")
-    
-    print("\nMuestra de resultados:")
-    for res in muestra[:20]:
-        if 'resultado' in res and res['resultado'] == 'identical':
-            print(f"Línea {res['linea']}: [CADENA IDÉNTICA]")
-        else:
-            print(f"Línea {res['linea']}:")
-            for dif in res.get('diferencias', [])[:5]:
-                print(f"  Pos {dif['posicion']}: Arch1[{dif['cadena1']}] vs Arch2[{dif['cadena2']}]")
-            if len(res.get('diferencias', [])) > 5:
-                print(f"  ... y {len(res['diferencias'])-5} diferencias más")
+    ruta1 = "../chain-one.fna"
+    ruta2 = "../chain-two.fna"
+
+    print("Iniciando comparación optimizada...")
+    muestra, total, tiempo = procesar_archivos(ruta1, ruta2)
+
+    print(f"\nComparación finalizada en {tiempo:.2f} segundos")
+    print(f"Diferencias totales encontradas: {total}\n")
+
+    print("Muestra de diferencias:")
+    for res in muestra:
+        print(f"Línea {res['linea']}:")
+        for dif in res.get('diferencias', [])[:5]:
+            print(f"  Pos {dif['posicion']}: Arch1[{dif['cadena1']}] vs Arch2[{dif['cadena2']}]")
+        if len(res.get('diferencias', [])) > 5:
+            print(f"  ... y {len(res['diferencias'])-5} más")
+
+    print("\nResultados guardados en:")
+    print("- diferencias.json")
+    print("- diferencias.txt")
 
 if __name__ == '__main__':
     main()
