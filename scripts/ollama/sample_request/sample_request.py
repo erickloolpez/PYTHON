@@ -2,11 +2,11 @@ import requests
 import json
 
 # Set up the base URL for the local Ollama API
-url = "http://localhost:11434/api/chat"
+url = "http://31.97.12.177:11434/api/chat"
 
 # Define the payload (your input prompt)
 payload = {
-    "model": "deepseek-r1:1.5b",  # Replace with the model name you're using
+    "model": "llama3.2:1b",  # Replace with the model name you're using
     "messages": [{"role": "user", "content": "What is Python?"}]
 }
 
