@@ -1,0 +1,15 @@
+artifact_uri: file:c:/Users/erick/documents/Full_Stack/python/machine-learning/mlops/tracking/tracking/experiment_ml/736316104182322711/f6f372b2a15749f5b946a1b7f600a9d7/artifacts
+end_time: 1748287846113
+entry_point_name: ''
+experiment_id: '736316104182322711'
+lifecycle_stage: active
+run_id: f6f372b2a15749f5b946a1b7f600a9d7
+run_name: example_1
+run_uuid: f6f372b2a15749f5b946a1b7f600a9d7
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1748287835518
+status: 3
+tags: []
+user_id: erick
